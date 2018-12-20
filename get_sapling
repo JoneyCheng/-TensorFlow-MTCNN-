@@ -1,0 +1,73 @@
+#采样
+import os
+import numpy as np
+import matplotlib.image as image
+import PIL.Image as Image
+import tensorflow as tf
+
+ANNO_FILE = r"E:\pycharm_project\datasets\48_train.txt"
+IMAGE_DIR = r"E:\pycharm_project\datasets\48_train"
+
+filenames = []
+coords = []
+
+with open(ANNO_FILE) as f:
+    for line in f:
+
+        strs = line.split(" ")
+        filename = strs[0]
+        label = strs[1]
+        offset_x1 = strs[2]
+        offset_y1 = strs[3]
+        offset_x2 = strs[4]
+        offset_y2 = strs[5]
+
+        offset_lefteye_x = strs[6]
+        offset_lefteye_y = strs[7]
+        offset_righteye_x = strs[8]
+        offset_righteye_y = strs[9]
+        offset_nose_x = strs[10]
+        offset_nose_y = strs[11]
+        offset_leftmouth_x = strs[12]
+        offset_leftmouth_y = strs[13]
+        offset_rightmouth_x = strs[14]
+        offset_rightmouth_y = strs[15]
+
+        coord = [label,offset_x1,offset_y1,offset_x2,offset_y2,offset_lefteye_x, offset_lefteye_y, offset_righteye_x,offset_righteye_y,
+                offset_nose_x, offset_nose_y, offset_leftmouth_x,offset_leftmouth_y,offset_rightmouth_x, offset_rightmouth_y]
+        name = os.path.splitext("{0}\{1}.jpg".format(IMAGE_DIR, filename))#获取图片文件夹路径，和txt文件里保存的图片名。以对应每张图片的路径
+        # print(name[0])
+
+        filenames.append(name[0])
+        coords.append(coord)
+
+# for filename in os.listdir(IMAGE_DIR):
+#     # 从系统直接读进来的filename包含了整体文件名（??????.jpg or ?????.png,....）
+#     name = os.path.splitext("{0}\{1}.jpg".format(IMAGE_DIR, filename))  # 批量读出要处理的图片
+#     filenames.append(name[0])
+#     # print(np.shape(filenames))
+
+def _parse_function(filename,coord):
+    image_string = tf.read_file(filename)
+    image_decode = tf.image.decode_image(image_string)
+
+    return image_decode,coord
+
+class Sample:
+
+    def get_batch(self, set):
+        data_filenames = tf.constant(filenames)
+        data_set1 = tf.data.Dataset.from_tensor_slices((data_filenames,coords))
+        data_set2 = data_set1.map(_parse_function)
+        data_set3 = data_set2.repeat()
+        data_set4 = data_set3.shuffle(500)
+        batch_data_set = data_set4.batch(set)
+        iterator = batch_data_set.make_one_shot_iterator()
+        x = iterator.get_next()
+        with tf.Session() as sess:
+            img,coord = sess.run(x)
+            image = img / 255
+        return image,coord
+
+sample_train = Sample()
+# print(np.shape(sample_train.get_batch(100)[1]))
