@@ -1,0 +1,262 @@
+#测试和使用网络
+import tensorflow as tf
+import numpy as np
+import PIL.Image as image
+import PIL.ImageDraw as draw
+import matplotlib.image as img
+import matplotlib.pyplot as plt
+from tensorflow.python.framework import graph_util
+from tensorflow.python.platform import gfile
+from skimage import io,transform
+from MTCNN_TensorFlow.tools import until
+
+p_pb_file_path = r"E:\pycharm_project\MTCNN_TensorFlow\protocolbuffer\p_net\p_model.pb"
+r_pb_file_path = r"E:\pycharm_project\MTCNN_TensorFlow\protocolbuffer\r_net\r_model.pb"
+o_pb_file_path = r"E:\pycharm_project\MTCNN_TensorFlow\protocolbuffer\o_net\o_model.pb"
+
+class Detector:
+
+    def pnet(self,img_array):
+        sess = tf.Session()
+        with gfile.FastGFile(p_pb_file_path,mode="rb") as f:
+            graph_def = tf.GraphDef()
+            graph_def.ParseFromString(f.read())
+            sess.graph.as_default()
+            tf.import_graph_def(graph_def, name='')  # 导入计算图
+
+            sess.run(tf.global_variables_initializer())
+            input_x = sess.graph.get_tensor_by_name('p_x:0')
+            output_cls = sess.graph.get_tensor_by_name("p_cls_output:0")
+            output_offset = sess.graph.get_tensor_by_name("p_offset_output:0")
+
+            #图像金字塔
+            pyramid = list(transform.pyramid_gaussian(img_array, downscale=1.5))#自动归一化
+            # print(img_array)
+            # print(pyramid)
+            img_array_h = img_array.shape[0]
+            img_array_w = img_array.shape[1]
+            # print(img_array_w,img_array_h)
+
+            image_num = len(pyramid)
+            box = np.zeros([0,5],dtype=np.float32)
+            boxes =[]
+            for i in range(image_num):
+                # print(pyramid[i].shape[0],pyramid[i].shape[1])
+                if min(pyramid[i].shape[0], pyramid[i].shape[1]) < 12:
+                    break
+                img_resized = pyramid[i]
+                img_resized_h = img_resized.shape[0]
+                img_resized_w = img_resized.shape[1]
+
+                h_resize = img_array_h / img_resized_h
+                w_resize = img_array_w / img_resized_w
+
+                img_resized = np.array([img_resized])
+                _cls, _offset = sess.run([output_cls, output_offset], feed_dict={input_x: img_resized})
+
+                # 从侦测到的金字塔缩放的图像的特征图上的偏移率，还原到金字塔缩放的图像的特征图上的坐标值
+                #（侦测到的金字塔图的特征图的偏移率）--→（偏移值恢复到特征图上的坐标值）
+                _offset[..., 0] = _offset[..., 0] * 12 + 0
+                _offset[..., 1] = _offset[..., 1] * 12 + 0
+                _offset[..., 2] = _offset[..., 2] * 12 + 12
+                _offset[..., 3] = _offset[..., 3] * 12 + 12
+
+            # 从每个金字塔图像的特征图上的坐标值,还原到金字塔原图像上的坐标值
+            #（金家塔缩放后的图像的特征图上的坐标值）--→（金字塔缩放后的原图像上的坐标值）
+                # 从特征图还原h到缩放后的原图上
+                for i in range(_offset.shape[1]):#遍历h索引
+                    # _offset[:, i, :, 1]为每个特征图的坐标y1，2为特征图每次卷积的步长，也就是特征图的坐标y1每次缩小的倍数，这里要反算回来。
+                    _offset[:, i, :, 1] = _offset[:, i, :, 1] + i * 2#(y1)
+                    # _offset[:, i, :, 3]为每个特征图的坐标y2，2为特征图每次卷积的步长，也就是特征图的坐标y2每次缩小的倍数，这里要反算回来。
+                    _offset[:, i, :, 3] = _offset[:, i, :, 3] + i * 2#(y2)
+                # 从特征图还原w到缩放后的原图上
+                for i in range(_offset.shape[2]):#遍历w索引
+                    #_offset[:, :, i, 0]为每个特征图的坐标x1，2为特征图每次卷积的步长，也就是特征图的坐标x1每次缩小的倍数，这里要反算回来。
+                    _offset[:, :, i, 0] = _offset[:, :, i, 0] + i * 2#(x1)
+                    # _offset[:, :, i, 2]为每个特征图的坐标x2，2为特征图每次卷积的步长，也就是特征图的坐标x2每次缩小的倍数，这里要反算回来。
+                    _offset[:, :, i, 2] = _offset[:, :, i, 2] + i * 2#(x2)
+
+                # 从金字塔缩放后的图像上的坐标值，还原到原始输入图像上的坐标值。
+                #（金字塔缩放后的图像上的坐标值）--→（原始输入图像上的坐标值）
+                _offset[..., 1] = _offset[..., 1] * h_resize#把h还原到原图上
+                _offset[..., 3] = _offset[..., 3] * h_resize
+
+                _offset[..., 0] = _offset[..., 0] * w_resize#把w还原到原图上
+                _offset[..., 2] = _offset[..., 2] * w_resize
+
+                isobj_result = np.concatenate((_cls, _offset), axis=3)#把一张图的cls和offset连接起来
+
+                index = np.where(isobj_result[..., 0] > 0.5)
+                isobj_result = isobj_result[index]
+                one_img_box = until.nms(isobj_result, 0.3)
+
+                if one_img_box.shape[0]>0:
+                    box = np.concatenate((box,one_img_box),axis=0)
+                    # print(box.shape, "******45656")
+
+            #     img = draw.Draw(img_test)
+            #     for i in range(one_img_box.shape[0]):
+            #         img.rectangle(one_img_box[i, 1:], outline='red')
+            # img_test.show()
+            return box
+
+    def rnet(self,img_box,rimg_test):
+        sess = tf.Session()
+        with gfile.FastGFile(r_pb_file_path, mode="rb") as f:
+            graph_def = tf.GraphDef()
+            graph_def.ParseFromString(f.read())
+            sess.graph.as_default()
+            tf.import_graph_def(graph_def, name='')  # 导入计算图
+
+            sess.run(tf.global_variables_initializer())
+            input_x = sess.graph.get_tensor_by_name('r_x:0')
+            output_cls = sess.graph.get_tensor_by_name("r_cls_output:0")
+            output_offset = sess.graph.get_tensor_by_name("r_offset_output:0")
+
+            convert_img = until.convert_to_square(img_box)
+            boxes = []
+            for box in convert_img:
+                convert_x1 = box[1]
+                convert_y1 = box[2]
+                convert_x2 = box[3]
+                convert_y2 = box[4]
+                convert_w = convert_x2 -convert_x1
+                convert_h = convert_y2 - convert_y1
+                img_crop = rimg_test.crop([convert_x1,convert_y1,convert_x2,convert_y2])
+                img_size = img_crop.resize((24,24))
+                img_array = [np.array(img_size)/255]
+                cls,offset = sess.run([output_cls,output_offset],feed_dict={input_x:img_array})
+                # print(cls,"r_cls")
+                #返回到原图的坐标
+                x1 = offset[:, 0] * convert_w + convert_x1
+                y1 = offset[:, 1] * convert_h + convert_y1
+                x2 = offset[:, 2] * convert_w + convert_x2
+                y2 = offset[:, 3] * convert_h + convert_y2
+
+                x1 = np.expand_dims(x1,axis=1)
+                y1 = np.expand_dims(y1, axis=1)
+                x2 = np.expand_dims(x2, axis=1)
+                y2 = np.expand_dims(y2, axis=1)
+                box = np.concatenate((cls,x1,y1,x2,y2),axis=1)
+                boxes.append(box[0])
+            boxes = np.stack(boxes)
+            # print(boxes.shape)
+            index = np.where(boxes[:, 0]>0.7)
+            isobj_result = boxes[index]
+            # print(isobj_result.shape)
+            rone_img_box = until.nms(isobj_result, 0.3)
+            # print(rone_img_box.shape)
+
+        #     img = draw.Draw(img_test)
+        #     for i in range(rone_img_box.shape[0]):
+        #         img.rectangle(rone_img_box[i, 1:], outline='red')
+        # img_test.show()
+        return rone_img_box
+
+    def onet(self,rimg_box,oimg_test):
+        sess = tf.Session()
+        with gfile.FastGFile(o_pb_file_path, mode="rb") as f:
+            graph_def = tf.GraphDef()
+            graph_def.ParseFromString(f.read())
+            sess.graph.as_default()
+            tf.import_graph_def(graph_def, name='')  # 导入计算图
+            sess.run(tf.global_variables_initializer())
+            input_x = sess.graph.get_tensor_by_name('o_x:0')
+            output_cls = sess.graph.get_tensor_by_name("o_cls_output:0")
+            output_offset = sess.graph.get_tensor_by_name("o_offset_output:0")
+
+            convert_img = until.convert_to_square(rimg_box)
+            boxes = []
+            for box in convert_img:
+                markoffset_output = sess.graph.get_tensor_by_name("o_markoffset_output:0")
+                convert_x1 = box[1]
+                convert_y1 = box[2]
+                convert_x2 = box[3]
+                convert_y2 = box[4]
+                convert_w = convert_x2 -convert_x1
+                convert_h = convert_y2 - convert_y1
+
+                img_crop = oimg_test.crop([convert_x1,convert_y1,convert_x2,convert_y2])
+                img_size = img_crop.resize((48,48))
+                img_array = np.array(img_size)/255
+                img_array = np.expand_dims(img_array, 0)
+
+                cls,offset,markoffset_output = sess.run([output_cls, output_offset,markoffset_output],feed_dict={input_x:img_array})
+
+                #返回到原图的坐标
+
+                x1 = offset[:, 0] * convert_w + convert_x1
+                y1 = offset[:, 1] * convert_h + convert_y1
+                x2 = offset[:, 2] * convert_w + convert_x2
+                y2 = offset[:, 3] * convert_h + convert_y2
+
+                lefteye_x = markoffset_output[:,0] * convert_w + convert_x1
+                lefteye_y = markoffset_output[:,1] * convert_h + convert_y1
+                righteye_x = markoffset_output[:,2] * convert_w + convert_x1
+                righteye_y = markoffset_output[:,3] * convert_h + convert_y1
+                nose_x = markoffset_output[:,4] * convert_w + convert_x1
+                nose_y = markoffset_output[:,5] * convert_h + convert_y1
+                leftmouth_x = markoffset_output[:,6] * convert_w + convert_x1
+                leftmouth_y = markoffset_output[:,7] * convert_h + convert_y1
+                rightmouth_x = markoffset_output[:,8] * convert_w + convert_x1
+                rightmouth_y = markoffset_output[:,9] * convert_h + convert_y1
+
+                x1 = np.expand_dims(x1,axis=1)
+                y1 = np.expand_dims(y1, axis=1)
+                x2 = np.expand_dims(x2, axis=1)
+                y2 = np.expand_dims(y2, axis=1)
+
+                lefteye_x = np.expand_dims(lefteye_x,axis=1)
+                lefteye_y = np.expand_dims(lefteye_y,axis=1)
+                righteye_x = np.expand_dims(righteye_x,axis=1)
+                righteye_y = np.expand_dims(righteye_y,axis=1)
+                nose_x = np.expand_dims(nose_x,axis=1)
+                nose_y = np.expand_dims(nose_y,axis=1)
+                leftmouth_x = np.expand_dims(leftmouth_x,axis=1)
+                leftmouth_y = np.expand_dims(leftmouth_y,axis=1)
+                rightmouth_x = np.expand_dims(rightmouth_x,axis=1)
+                rightmouth_y = np.expand_dims(rightmouth_y,axis=1)
+
+                box = np.concatenate((cls,x1,y1,x2,y2,lefteye_x,lefteye_y,righteye_x,righteye_y,
+                nose_x,nose_y,leftmouth_x,leftmouth_y,rightmouth_x,rightmouth_y),axis=1)
+                boxes.append(box[0])
+
+            boxes = np.stack(boxes)
+            print(boxes.shape)
+            index = np.where(boxes[:, 0]>0.9999)
+            isobj_result = boxes[index]
+            print(isobj_result.shape)
+            rone_img_box = until.nms(isobj_result, 0.3, isMin = True)
+            print(rone_img_box.shape)
+            img = draw.Draw(oimg_test)
+            o = 1
+            x = 2
+            for i in range(rone_img_box.shape[0]):
+                # img.rectangle(rone_img_box[i, 1:5],outline='red')
+                h = rone_img_box[i,4]-rone_img_box[i,2]
+                w = rone_img_box[i,3]-rone_img_box[i,1]
+                # img.rectangle((rone_img_box[i, 1], rone_img_box[i, 2],rone_img_box[i, 3],rone_img_box[i, 4]),outline='green')
+                # img.rectangle((rone_img_box[i, 1]+o,rone_img_box[i, 2]+o,rone_img_box[i, 3]-o,rone_img_box[i, 4]-o), outline='green')
+                img.rectangle((rone_img_box[i, 1]+w*0.1, rone_img_box[i, 2]+h*0.1,rone_img_box[i, 3]-w*0.1,rone_img_box[i, 4]-h*0.2),outline='red')
+                img.rectangle((rone_img_box[i, 1]+o+w*0.1,rone_img_box[i, 2]+o+h*0.1,rone_img_box[i, 3]-o-w*0.1,rone_img_box[i, 4]-o-h*0.2), outline='red')
+                # img.point(rone_img_box[i,5:],fill="blue")
+                img.rectangle((rone_img_box[i, 5]-x,rone_img_box[i, 6]-x,rone_img_box[i, 5]+x,rone_img_box[i, 6]+x), fill="blue")
+                img.rectangle((rone_img_box[i, 7]-x,rone_img_box[i, 8]-x,rone_img_box[i, 7]+x,rone_img_box[i, 8]+x), fill="blue")
+                img.rectangle((rone_img_box[i, 9]-x,rone_img_box[i, 10]-x,rone_img_box[i, 9]+x,rone_img_box[i, 10]+x), fill="blue")
+                img.rectangle((rone_img_box[i, 11]-x,rone_img_box[i, 12]-x,rone_img_box[i, 11]+x,rone_img_box[i, 12]+x), fill="blue")
+                img.rectangle((rone_img_box[i, 13]-x,rone_img_box[i, 14]-x,rone_img_box[i, 13]+x,rone_img_box[i, 14]+x), fill="blue")
+        oimg_test.show()
+        oimg_test.save("./test.jpg")
+
+
+detect = Detector()
+# img_path = r"./8.jpg"
+
+img_path = r"E:\pycharm_project\test_image\41.jpg"
+img_arrays = io.imread(img_path)
+img_test = image.open(img_path)
+img_box = detect.pnet(img_arrays)
+rimg_box = detect.rnet(img_box,img_test)
+oimg_box = detect.onet(rimg_box,img_test)
+
+
