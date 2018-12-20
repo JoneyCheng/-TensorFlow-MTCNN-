@@ -2,21 +2,28 @@
 ＃48*48样本生成
 
 import os
+
 import numpy as np
+
 from PIL import Image
+
 from MTCNN_TensorFlow.tools import gen_until
 
 landmarks_FILE = r"E:\pycharm_project\datasets\list_landmarks_celeba.txt"
 
 IMAGE_DIR = r"E:\pycharm_project\datasets\img_celeba_ALL"
+
 ANNO_FILE = r"E:\pycharm_project\datasets\list_bbox_celeba_ALL.txt"
 
 DST_IMAGE_DIR = r"E:\pycharm_project\datasets\48_train"
+
 DST_ANNO_FILE = r"E:\pycharm_project\datasets\48_train.txt"
 
 
 count = 0
+
 floats = [0.1,0.15,0.4,0.6,0.7,0.75,0.8,0.85,0.9,0.95]
+
 with open(DST_ANNO_FILE,"w") as dst_f:#打开要记录生成label的文件，并开始写入记录
 
     with open(ANNO_FILE) as f:#打开目前的label文件
